@@ -8,4 +8,4 @@ __pycache__/
 *.log
 /build/
 /dist/
-/data/
+data/
