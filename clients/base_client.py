@@ -15,10 +15,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from models.logistic_from_scratch import LogisticRegressionScratch, load_csv_xy
+from models.logistic_regression import LogisticRegression, load_csv_xy
 from server.secure_aggregation.ecdh import generate_keypair
 from server.secure_aggregation.bonawitz import make_mask_vector
-from scripts.encoding import encode_vector_to_int
+from scripts.encoding import encode_vector_to_int, clip_vector
 import base64
 
 
@@ -33,10 +33,10 @@ class FLClient:
         self.batch_size = batch_size
         self.local_epochs = local_epochs
         self.X, self.y, self.feats = load_csv_xy(data_csv, label_col=label_col)
-        self.model = LogisticRegressionScratch(n_features=len(self.feats), lr=self.lr, reg=self.reg)
+        self.model = LogisticRegression(n_features=len(self.feats), lr=self.lr, reg=self.reg)
         self.secagg = secagg
         self.Q = 2**61 - 1
-        self.S = 2**16
+        self.S = 2**20
 
     def fetch_global(self) -> Tuple[List[float], float, int]:
         r = requests.get(f"{self.server_url}/global_model", timeout=30)
@@ -55,7 +55,6 @@ class FLClient:
         # set global
         self.model.set_params(gw, gb)
         # local train
-        # CPU before
         ru0 = resource.getrusage(resource.RUSAGE_SELF)
         cpu0 = float(ru0.ru_utime + ru0.ru_stime)
         t0 = time.time()
@@ -66,6 +65,9 @@ class FLClient:
         # delta
         lw, lb = self.model.get_params()
         dw = [lw[i] - gw[i] for i in range(len(gw))]
+        # optional clipping
+        C = float(os.environ.get("CLIP_C", "1.0"))
+        dw = clip_vector(dw, C)
         db = lb - gb
         if not self.secagg:
             # approx JSON bytes
@@ -75,7 +77,7 @@ class FLClient:
             self._log_client_perf(round_id=rnd, secagg=0, train_time=train_time, cpu_time=cpu_time, upload_bytes=approx_bytes)
             return res
         else:
-            # SecAgg: register/get peers
+            # SecAgg handshake
             kp = generate_keypair()
             reg = requests.post(f"{self.server_url}/register_round", json={
                 'client_id': os.environ.get('CLIENT_ID', 'client'),
@@ -86,7 +88,6 @@ class FLClient:
             # wait ready
             tries = 0
             while js.get('status') != 'ready' and tries < 60:
-                import time
                 time.sleep(1)
                 reg = requests.post(f"{self.server_url}/register_round", json={
                     'client_id': os.environ.get('CLIENT_ID', 'client'),
@@ -97,21 +98,29 @@ class FLClient:
             if js.get('status') != 'ready':
                 raise RuntimeError('SecAgg peers not ready')
             round_id = int(js['round_id'])
-            # peers map
+            # peers
             peers = {cid: base64.b64decode(b64) for cid, b64 in js['pubkeys'].items()}
             my_id = os.environ.get('CLIENT_ID', 'client')
-            mask = make_mask_vector(kp, peers, round_id, dim=len(dw), q=self.Q, my_id=my_id)
-            enc = encode_vector_to_int(dw, S=self.S, q=self.Q)
-            masked = [(enc[i] + mask[i]) % self.Q for i in range(len(enc))]
-            payload = {"masked": masked, "num_samples": len(self.X)}
+            # bias as extra dim
+            dim = len(dw) + 1
+            mask = make_mask_vector(kp, peers, round_id, dim=dim, q=self.Q, my_id=my_id)
+            n = len(self.X)
+            # sample-weighted encoding
+            enc_w = encode_vector_to_int([d * n for d in dw], S=self.S, q=self.Q)
+            enc_b = encode_vector_to_int([db * n], S=self.S, q=self.Q)[0]
+            masked_w = [(enc_w[i] + mask[i]) % self.Q for i in range(len(enc_w))]
+            masked_b = (enc_b + mask[-1]) % self.Q
+            payload = {"masked_w": masked_w, "masked_b": masked_b, "num_samples": n, "round_id": round_id, "client_id": my_id}
             rr = requests.post(f"{self.server_url}/submit_masked_update", json=payload, timeout=60)
             rr.raise_for_status()
+            res_js = rr.json()
+            applied_round = int(res_js.get('applied_round', -1)) if isinstance(res_js, dict) else -1
             # approx bytes
-            approx_bytes = 8 * len(masked)
-            self._log_client_perf(round_id=round_id, secagg=1, train_time=train_time, cpu_time=cpu_time, upload_bytes=approx_bytes)
-            return rr.json()
+            approx_bytes = 8 * (len(masked_w) + 1)
+            self._log_client_perf(round_id=round_id, secagg=1, train_time=train_time, cpu_time=cpu_time, upload_bytes=approx_bytes, applied_round=applied_round)
+            return res_js
 
-    def _log_client_perf(self, round_id: int, secagg: int, train_time: float, cpu_time: float, upload_bytes: int):
+    def _log_client_perf(self, round_id: int, secagg: int, train_time: float, cpu_time: float, upload_bytes: int, applied_round: int = -1):
         """Append per-round client metrics."""
         state_dir = Path(os.environ.get("STATE_DIR", "server/state"))
         state_dir.mkdir(parents=True, exist_ok=True)
@@ -120,5 +129,5 @@ class FLClient:
         with path.open("a", newline="") as f:
             w = csv.writer(f)
             if not exists:
-                w.writerow(["client_id", "round", "secagg", "local_train_time_s", "cpu_time_s", "upload_bytes"])
-            w.writerow([os.environ.get("CLIENT_ID", "client"), round_id, secagg, f"{train_time:.6f}", f"{cpu_time:.6f}", upload_bytes])
+                w.writerow(["client_id", "round", "secagg", "local_train_time_s", "cpu_time_s", "upload_bytes", "applied_round"]) 
+            w.writerow([os.environ.get("CLIENT_ID", "client"), round_id, secagg, f"{train_time:.6f}", f"{cpu_time:.6f}", upload_bytes, applied_round])

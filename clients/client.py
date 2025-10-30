@@ -27,6 +27,19 @@ def main():
         res = client.train_one_round()
         print(f"Round {r+1}/{rounds} submit result: {res}")
 
+    # Ensure the server has applied the final aggregation before exiting
+    # This prevents docker compose from stopping early (abort-on-container-exit)
+    # before the server writes the last round's metrics.
+    try:
+        deadline = time.time() + 60.0
+        while time.time() < deadline:
+            gw, gb, current = client.fetch_global()
+            if current >= rounds:
+                break
+            time.sleep(0.5)
+    except Exception:
+        pass
+
 
 if __name__ == "__main__":
     main()

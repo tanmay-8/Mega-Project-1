@@ -1,12 +1,11 @@
-#!/usr/bin/env python3
 """
-Train centralized baseline using from-scratch Logistic Regression on CSV data only.
+Train centralized baseline using Logistic Regression on CSV data only.
 Reads data/processed/train.csv and test.csv with label column 'Class' by default.
-Computes AUC, precision, recall, F1 from scratch and saves results under outputs/.
+Computes AUC and precision, then saves results under outputs/.
 
 Usage:
-  python scripts/train_centralized.py --train data/processed/train.csv --test data/processed/test.csv \
-      --label Class --epochs 5 --lr 0.1 --batch-size 256 --reg 0.0
+    python scripts/train_centralized.py --train data/processed/train.csv --test data/processed/test.csv \
+            --label Class --epochs 5 --lr 0.1 --batch-size 256 --reg 0.0
 """
 from __future__ import annotations
 import argparse
@@ -18,16 +17,14 @@ from typing import List, Tuple
 import sys
 from pathlib import Path
 
-# Ensure project root on path for local imports
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from models.logistic_from_scratch import LogisticRegressionScratch, load_csv_xy
+from models.logistic_regression import LogisticRegression, load_csv_xy
 
 
 def auc_roc(y_true: List[int], y_score: List[float]) -> float:
-    # Compute AUC via rank statistics (Mann-Whitney U)
     pairs = list(zip(y_score, y_true))
     pairs.sort(key=lambda t: t[0])
     n0 = sum(1 for _, yt in pairs if yt == 0)
@@ -41,26 +38,21 @@ def auc_roc(y_true: List[int], y_score: List[float]) -> float:
         j = i
         while j < len(pairs) and pairs[j][0] == pairs[i][0]:
             j += 1
-        # average rank for ties
         avg_rank = (rank + rank + (j - i) - 1) / 2.0
         for k in range(i, j):
             if pairs[k][1] == 1:
                 rank_sum += avg_rank
         rank += (j - i)
         i = j
-    # U statistic for positives
     U1 = rank_sum - n1 * (n1 + 1) / 2.0
     return U1 / (n0 * n1)
 
 
-def precision_recall_f1(y_true: List[int], y_pred: List[int]) -> Tuple[float, float, float]:
+def precision_only(y_true: List[int], y_pred: List[int]) -> float:
     tp = sum(1 for yt, yp in zip(y_true, y_pred) if yt == 1 and yp == 1)
     fp = sum(1 for yt, yp in zip(y_true, y_pred) if yt == 0 and yp == 1)
-    fn = sum(1 for yt, yp in zip(y_true, y_pred) if yt == 1 and yp == 0)
     precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-    recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-    f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) > 0 else 0.0
-    return precision, recall, f1
+    return precision
 
 
 def main():
@@ -77,21 +69,21 @@ def main():
     X_train, y_train, feat_names = load_csv_xy(args.train, label_col=args.label)
     X_test, y_test, _ = load_csv_xy(args.test, label_col=args.label)
 
-    model = LogisticRegressionScratch(n_features=len(feat_names), lr=args.lr, reg=args.reg)
+    model = LogisticRegression(n_features=len(feat_names), lr=args.lr, reg=args.reg)
     model.fit(X_train, y_train, epochs=args.epochs, batch_size=args.batch_size, verbose=True)
 
     proba = model.predict_proba(X_test)
     auc = auc_roc(y_test, proba)
 
     preds = [1 if p >= 0.5 else 0 for p in proba]
-    precision, recall, f1 = precision_recall_f1(y_test, preds)
+    precision = precision_only(y_test, preds)
 
     # Save outputs
     outputs_dir = Path("outputs")
     (outputs_dir / "models").mkdir(parents=True, exist_ok=True)
     (outputs_dir / "metrics").mkdir(parents=True, exist_ok=True)
 
-    model_path = outputs_dir / "models" / "logreg_scratch.csv"
+    model_path = outputs_dir / "models" / "logreg.csv"
     model.save_csv(str(model_path))
 
     metrics_path = outputs_dir / "metrics" / "centralized_metrics.csv"
@@ -100,8 +92,7 @@ def main():
         writer.writerow(["metric", "value"])
         writer.writerow(["AUC", f"{auc:.6f}"])
         writer.writerow(["Precision", f"{precision:.6f}"])
-        writer.writerow(["Recall", f"{recall:.6f}"])
-        writer.writerow(["F1", f"{f1:.6f}"])
+    # Only AUC and Precision retained as requested
 
     print(f"Saved model to {model_path}")
     print(f"Saved metrics to {metrics_path}")

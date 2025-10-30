@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
-"""
-HKDF + HMAC-based PRG to expand a shared seed into a mask vector modulo q.
-"""
+"""HKDF + HMAC-PRG: expand shared seed into mask vector mod q."""
 from __future__ import annotations
 import hmac
 import hashlib
@@ -22,7 +20,7 @@ def hkdf_expand(key_material: bytes, salt: bytes, info: bytes, length: int = 32)
 
 
 def prg_stream(seed: bytes, out_len_bytes: int) -> bytes:
-    # HMAC-DRBG style expansion: HMAC(seed, counter || prev)
+    # HMAC-DRBG style
     out = bytearray()
     counter = 1
     prev = b""
@@ -36,7 +34,7 @@ def prg_stream(seed: bytes, out_len_bytes: int) -> bytes:
 
 
 def prg_mask_vector(seed: bytes, dim: int, q: int) -> List[int]:
-    # Produce dim 64-bit integers modulo q from PRG stream
+    # dim 64-bit ints mod q
     stream = prg_stream(seed, out_len_bytes=8 * dim)
     out: List[int] = []
     for i in range(dim):

@@ -1,14 +1,5 @@
 #!/usr/bin/env python3
-"""
-Bonawitz-style mask orchestration helpers (simplified for prototype):
-- Key agreement: peers exchange ephemeral X25519 public keys
-- Derive pairwise seeds via HKDF with (round_id, i, j) context
-- Expand seeds into mask vectors; apply sign convention to ensure cancellation
-
-This module does not implement full dropout recovery. For prototype,
-we assume all declared clients submit in a round. Basic extensions can
-add seed sharing to the server for reconstruction.
-"""
+"""Bonawitz-style mask helpers (prototype; assumes no dropout)."""
 from __future__ import annotations
 from typing import Dict, List, Tuple
 
@@ -24,10 +15,7 @@ def derive_pairwise_seed(my_sk, peer_pub_bytes: bytes, round_id: int, i: str, j:
 
 
 def make_mask_vector(my_kp: KeyPair, peers: Dict[str, bytes], round_id: int, dim: int, q: int, my_id: str) -> List[int]:
-    """
-    Compute total mask for this client: sum over j!=i of sign(i,j) * r_ij
-    where r_ij = PRG(seed_ij) and sign(i,j) = +1 if i<j else -1 (string order).
-    """
+    """Sum signed pairwise masks; signs cancel across clients."""
     acc = [0] * dim
     for pid, ppub in peers.items():
         if pid == my_id:

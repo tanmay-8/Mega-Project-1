@@ -2,14 +2,14 @@
 
 This repo contains a hub-and-spoke Federated Learning prototype (server + N dockerized clients) for finance datasets (e.g., credit card fraud), with:
 
-- From-scratch binary logistic regression for centralized and local client training (no external ML libs; pure Python stdlib for math and CSV I/O)
+- Binary logistic regression for centralized and local client training (no external ML libs; pure Python stdlib for math and CSV I/O)
 - Plain FedAvg orchestration over HTTP (Flask)
 - Secure Aggregation (Bonawitz-style) building blocks with X25519 ECDH, HKDF, and HMAC-based PRG, plus unit tests and a simple dropout recovery simulation
 - Docker Compose setup to run server and 3 clients; scale to more clients as needed
 - Notebooks for centralized baseline and FL demos
 
 Important constraints satisfied:
-- Logistic regression is implemented from scratch without external libraries
+- Logistic regression is implemented without external ML libraries
 - Data artifacts are stored as CSV only (no NPY files)
 
 ### Quickstart
@@ -84,9 +84,9 @@ docker system prune -f
 
 ### Repo Highlights
 
-- `models/logistic_from_scratch.py`: pure-Python logistic regression (SGD/minibatch, L2, CSV save/load)
+- `models/logistic_regression.py`: pure-Python logistic regression (SGD/minibatch, L2, CSV save/load)
 - `scripts/preprocess_data.py`: CSV-only preprocessing and per-client partitioning
-- `scripts/train_centralized.py`: centralized training and metrics (AUC/Precision/Recall/F1) computed from scratch
+- `scripts/train_centralized.py`: centralized training and metrics (AUC/Precision/Recall/F1) computed in pure Python
 - `server/server.py`, `server/fedavg.py`: FL orchestration endpoints
 - `server/secure_aggregation/*`: ECDH, HKDF+PRG, and mask composition helpers
 - `clients/base_client.py`, `clients/client.py`: client loop (global fetch, local train, delta submit); SECAGG optional

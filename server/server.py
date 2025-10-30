@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""FL server with FedAvg and optional Bonawitz-style secure aggregation."""
+"""FL server with FedAvg and secure aggregation."""
 from __future__ import annotations
 import os
 import csv
@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import List
 
 from flask import Flask, jsonify, request
+from threading import Lock
 
 import sys
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -20,17 +21,21 @@ from scripts.encoding import encode_vector_to_int, decode_int_to_float
 
 app = Flask(__name__)
 STATE = None
-# SecAgg state
+# SecAgg
 SECAGG_ROUND = {
     'round_id': 0,
     'pubkeys': {},
+    'ready_issued': set(),
+    'submitted': set(),
     'masked_updates': [],
     't_start': None,
     'byte_count': 0,
     'cpu_start': None,
+    'finalized': False,
 }
+SECAGG_LOCK = Lock()
 Q = 2**61 - 1
-S = 2**16
+S = 2**20
 
 
 def infer_n_features(csv_path: Path, label_col: str = "Class") -> int:
@@ -83,50 +88,79 @@ def register_round():
     if not client_id or not pubkey_b64:
         return jsonify({"status": "error", "message": "missing client_id/pubkey"}), 400
     import base64
-    SECAGG_ROUND['pubkeys'][client_id] = base64.b64decode(pubkey_b64)
-    # enough clients -> return all pubkeys
-    if len(SECAGG_ROUND['pubkeys']) >= get_state().clients_per_round:
-        all_pub = {cid: base64.b64encode(pk).decode() for cid, pk in SECAGG_ROUND['pubkeys'].items()}
-        # mark start
-        import time as _time
-        import resource as _resource
-        if SECAGG_ROUND.get('t_start') is None:
-            SECAGG_ROUND['t_start'] = _time.time()
-            ru = _resource.getrusage(_resource.RUSAGE_SELF)
-            SECAGG_ROUND['cpu_start'] = float(ru.ru_utime + ru.ru_stime)
-        return jsonify({"status": "ready", "round_id": SECAGG_ROUND['round_id'], "pubkeys": all_pub})
-    else:
-        return jsonify({"status": "waiting", "registered": len(SECAGG_ROUND['pubkeys'])})
+    with SECAGG_LOCK:
+        # register pubkey
+        if client_id not in SECAGG_ROUND['pubkeys']:
+            SECAGG_ROUND['pubkeys'][client_id] = base64.b64decode(pubkey_b64)
+        # enough clients: READY once
+        if len(SECAGG_ROUND['pubkeys']) >= get_state().clients_per_round and not SECAGG_ROUND['finalized']:
+            # start timing
+            import time as _time
+            import resource as _resource
+            if SECAGG_ROUND.get('t_start') is None:
+                SECAGG_ROUND['t_start'] = _time.time()
+                ru = _resource.getrusage(_resource.RUSAGE_SELF)
+                SECAGG_ROUND['cpu_start'] = float(ru.ru_utime + ru.ru_stime)
+            # set round id
+            SECAGG_ROUND['round_id'] = get_state().round
+            if client_id in SECAGG_ROUND['ready_issued']:
+                # already ready
+                return jsonify({"status": "waiting", "message": "already_ready", "round_id": SECAGG_ROUND['round_id'], "registered": len(SECAGG_ROUND['pubkeys'])})
+            SECAGG_ROUND['ready_issued'].add(client_id)
+            all_pub = {cid: base64.b64encode(pk).decode() for cid, pk in SECAGG_ROUND['pubkeys'].items()}
+            return jsonify({"status": "ready", "round_id": SECAGG_ROUND['round_id'], "pubkeys": all_pub})
+        else:
+            return jsonify({"status": "waiting", "registered": len(SECAGG_ROUND['pubkeys'])})
 
 
 @app.post("/submit_masked_update")
 def submit_masked_update():
     global SECAGG_ROUND
     data = request.get_json(force=True)
-    masked = data.get('masked')
+    masked_w = data.get('masked_w')
+    masked_b = data.get('masked_b')
     num_samples = int(data.get('num_samples', 0))
-    if not isinstance(masked, list) or num_samples <= 0:
+    client_id = data.get('client_id')
+    round_id = data.get('round_id')
+    if not isinstance(masked_w, list) or not isinstance(masked_b, (int, float)) or num_samples <= 0 or not client_id:
         return jsonify({"status": "error", "message": "invalid payload"}), 400
-    SECAGG_ROUND['masked_updates'].append((masked, num_samples))
-    # rough payload size
-    if isinstance(masked, list):
-        SECAGG_ROUND['byte_count'] = SECAGG_ROUND.get('byte_count', 0) + 8 * len(masked)
-    if len(SECAGG_ROUND['masked_updates']) >= get_state().clients_per_round:
+    with SECAGG_LOCK:
+        # round finalizing
+        if SECAGG_ROUND.get('finalized'):
+            return jsonify({"status": "round_closed", "round": SECAGG_ROUND.get('round_id', -1)})
+        # round must match
+        if round_id is None or int(round_id) != int(SECAGG_ROUND.get('round_id', 0)):
+            return jsonify({"status": "wrong_round", "expected_round": SECAGG_ROUND.get('round_id', 0)}), 409
+        # dedupe
+        if client_id in SECAGG_ROUND['submitted']:
+            return jsonify({"status": "duplicate", "received": len(SECAGG_ROUND['masked_updates'])})
+        SECAGG_ROUND['submitted'].add(client_id)
+        SECAGG_ROUND['masked_updates'].append((masked_w, int(masked_b), num_samples))
+        # approx bytes
+        SECAGG_ROUND['byte_count'] = SECAGG_ROUND.get('byte_count', 0) + 8 * (len(masked_w) + 1)
+        received = len(SECAGG_ROUND['masked_updates'])
+        if received < get_state().clients_per_round:
+            return jsonify({"status": "queued", "received": received})
+
+        # finalize and aggregate
+        SECAGG_ROUND['finalized'] = True
+        updates = list(SECAGG_ROUND['masked_updates'])
+
         # aggregate and apply
         n_features = get_state().n_features
-        total = sum(ns for _, ns in SECAGG_ROUND['masked_updates'])
-        # sum modulo q
-        agg = [0] * n_features
-        for vec, _ns in SECAGG_ROUND['masked_updates']:
+        total = sum(ns for _vec, _b, ns in updates)
+        agg_w = [0] * n_features
+        agg_b = 0
+        for vec, b_enc, _ns in updates:
             for i in range(n_features):
-                agg[i] = (agg[i] + int(vec[i]) % Q) % Q
-        # decode -> avg delta
-        avg = [x / total for x in decode_int_to_float(agg, S=S, q=Q)]
-        # apply
+                agg_w[i] = (agg_w[i] + int(vec[i]) % Q) % Q
+            agg_b = (agg_b + int(b_enc) % Q) % Q
+        avg_w = [x / total for x in decode_int_to_float(agg_w, S=S, q=Q)]
+        avg_b = decode_int_to_float([agg_b], S=S, q=Q)[0] / total
         st = get_state()
         for i in range(n_features):
-            st.w[i] += avg[i]
-        st.b += 0.0  # bias not masked here; extend if masking bias too
+            st.w[i] += avg_w[i]
+        st.b += avg_b
         st.round += 1
         st.save()
         # log
@@ -134,16 +168,17 @@ def submit_masked_update():
         _log_round_perf(total_bytes=SECAGG_ROUND.get('byte_count', 0))
         # reset
         SECAGG_ROUND = {
-            'round_id': SECAGG_ROUND['round_id'] + 1,
+            'round_id': get_state().round,
             'pubkeys': {},
+            'ready_issued': set(),
+            'submitted': set(),
             'masked_updates': [],
             't_start': None,
             'byte_count': 0,
             'cpu_start': None,
+            'finalized': False,
         }
         return jsonify({"status": "ok", "applied_round": st.round})
-    else:
-        return jsonify({"status": "queued", "received": len(SECAGG_ROUND['masked_updates'])})
 
 
 # Logging / eval
@@ -211,17 +246,17 @@ def _log_round_metrics():
     # Optional evaluation
     test_csv = os.environ.get("EVAL_TEST_CSV")
     if test_csv and Path(test_csv).exists():
-        from models.logistic_from_scratch import LogisticRegressionScratch, load_csv_xy
+        from models.logistic_regression import LogisticRegression, load_csv_xy
         X_test, y_test, _ = load_csv_xy(test_csv, label_col=os.environ.get("LABEL_COL", "Class"))
-        # Use current global model
-        model = LogisticRegressionScratch(n_features=st.n_features)
+        # current global model
+        model = LogisticRegression(n_features=st.n_features)
         model.set_params(st.w, st.b)
         proba = model.predict_proba(X_test)
         auc = _auc_roc(y_test, proba)
         preds = [1 if p >= 0.5 else 0 for p in proba]
-        prec, rec, f1 = _precision_recall_f1(y_test, preds)
-        _write_csv_row(metrics_log, ["round", "AUC", "Precision", "Recall", "F1"],
-                       [st.round, f"{auc:.6f}", f"{prec:.6f}", f"{rec:.6f}", f"{f1:.6f}"])
+        prec, _rec, _f1 = _precision_recall_f1(y_test, preds)
+        _write_csv_row(metrics_log, ["round", "AUC", "Precision"],
+                       [st.round, f"{auc:.6f}", f"{prec:.6f}"])
 
 
 def _log_round_perf(total_bytes: int = 0):

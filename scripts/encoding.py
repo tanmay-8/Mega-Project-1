@@ -1,16 +1,5 @@
 #!/usr/bin/env python3
-"""
-Encoding utilities for Secure Aggregation compatibility.
-All operations are pure Python; vectors are Python lists of floats/ints.
-
-- clip_vector(vec, C): L2-norm clip to radius C
-- encode_vector_to_int(vec, S, q): fixed-point encoding with scale S into modulo q ring
-- decode_int_to_float(int_vec, S, q): inverse decoding to floats in [-0.5, 0.5] wrapping assumptions
-
-Notes:
-- Choose q as a large prime (e.g., 2**61 - 1) and S as a power of 2 (e.g., 2**16).
-- Ensure that the sum of magnitudes stays below q/(2*S) to avoid wrap-around.
-"""
+"""Minimal encoding utilities for SecAgg (clip, encode, decode)."""
 from __future__ import annotations
 import math
 from typing import List
@@ -36,12 +25,12 @@ def mod_q(x: int, q: int) -> int:
 
 
 def encode_vector_to_int(vec: List[float], S: int = 2**16, q: int = 2**61 - 1) -> List[int]:
-    # fixed-point: round(S * x) mod q
+    # fixed-point
     return [mod_q(int(round(S * v)), q) for v in vec]
 
 
 def center_lift(x: int, q: int) -> int:
-    # Map from [0, q-1] to centered range (-(q//2), +(q//2)]
+    # center [0,q-1] to (-(q//2),(q//2)]
     if x > q // 2:
         return x - q
     return x

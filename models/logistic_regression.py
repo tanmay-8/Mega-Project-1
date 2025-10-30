@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Binary Logistic Regression implemented from scratch using only Python standard library.
+Binary Logistic Regression implemented using only the Python standard library.
 - Stochastic/mini-batch gradient descent
 - L2 regularization
 - CSV-based save/load of parameters
@@ -44,7 +44,7 @@ def l2_norm_sq(a: List[float]) -> float:
     return sum(x * x for x in a)
 
 
-class LogisticRegressionScratch:
+class LogisticRegression:
     def __init__(self, n_features: int, lr: float = 0.1, reg: float = 0.0, seed: int = 42):
         self.n_features = n_features
         self.lr = lr
@@ -132,7 +132,7 @@ class LogisticRegressionScratch:
             writer.writerow(["weights"] + self.w)
 
     @staticmethod
-    def load_csv(path: str) -> "LogisticRegressionScratch":
+    def load_csv(path: str) -> "LogisticRegression":
         with open(path, "r", newline="") as f:
             reader = csv.reader(f)
             first = next(reader)
@@ -143,7 +143,7 @@ class LogisticRegressionScratch:
             if second[0] != "weights":
                 raise ValueError("Invalid model file")
             w = [float(v) for v in second[1:]]
-        m = LogisticRegressionScratch(n_features=len(w))
+        m = LogisticRegression(n_features=len(w))
         m.set_params(w, b)
         return m
 
@@ -177,6 +177,6 @@ if __name__ == "__main__":
     # Simple sanity check on small synthetic data
     X = [[0.0], [1.0], [2.0], [3.0]]
     y = [0, 0, 1, 1]
-    model = LogisticRegressionScratch(n_features=1, lr=0.5, reg=0.0, seed=1)
+    model = LogisticRegression(n_features=1, lr=0.5, reg=0.0, seed=1)
     model.fit(X, y, epochs=50, batch_size=2, verbose=False)
     print("Probas:", model.predict_proba(X))

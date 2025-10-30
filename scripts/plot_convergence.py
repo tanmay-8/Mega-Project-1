@@ -16,22 +16,18 @@ def load_metrics(path: Path):
     rounds = []
     aucs = []
     precs = []
-    recs = []
-    f1s = []
     with path.open("r", newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
             rounds.append(int(row["round"]))
             aucs.append(float(row["AUC"]))
-            precs.append(float(row["Precision"]))
-            recs.append(float(row["Recall"]))
-            f1s.append(float(row["F1"]))
-    return rounds, aucs, precs, recs, f1s
+        precs.append(float(row["Precision"]))
+    return rounds, aucs, precs
 
 
 def main():
     metrics_path = Path("server/state/metrics_log.csv")
-    rounds, aucs, precs, recs, f1s = load_metrics(metrics_path)
+    rounds, aucs, precs = load_metrics(metrics_path)
 
     out_dir = Path("outputs/plots")
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -40,8 +36,8 @@ def main():
     plt.figure(figsize=(8, 5))
     if aucs:
         plt.plot(rounds, aucs, label="AUC")
-    if f1s:
-        plt.plot(rounds, f1s, label="F1")
+    if precs:
+        plt.plot(rounds, precs, label="Precision")
     plt.xlabel("Round")
     plt.ylabel("Metric")
     plt.title("Federated Convergence (Server-side evaluation)")
