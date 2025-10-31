@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bonawitz-style mask helpers (prototype; assumes no dropout)."""
+"""Bonawitz-style mask helpers"""
 from __future__ import annotations
 from typing import Dict, List, Tuple
 

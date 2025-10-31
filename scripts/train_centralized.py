@@ -92,7 +92,6 @@ def main():
         writer.writerow(["metric", "value"])
         writer.writerow(["AUC", f"{auc:.6f}"])
         writer.writerow(["Precision", f"{precision:.6f}"])
-    # Only AUC and Precision retained as requested
 
     print(f"Saved model to {model_path}")
     print(f"Saved metrics to {metrics_path}")

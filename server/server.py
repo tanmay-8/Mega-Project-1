@@ -44,7 +44,7 @@ def infer_n_features(csv_path: Path, label_col: str = "Class") -> int:
         header = next(reader)
         if label_col in header:
             return len(header) - 1
-        return len(header) - 1  # assume last is label
+        return len(header) - 1 
 
 
 def get_state() -> FedAvgState:
@@ -166,7 +166,6 @@ def submit_masked_update():
         # log
         _log_round_metrics()
         _log_round_perf(total_bytes=SECAGG_ROUND.get('byte_count', 0))
-        # reset
         SECAGG_ROUND = {
             'round_id': get_state().round,
             'pubkeys': {},
