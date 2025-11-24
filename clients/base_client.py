@@ -39,6 +39,8 @@ class FLClient:
         self.S = 2**20
         # guard to avoid duplicate metrics rows for the same round
         self._last_metrics_round = None
+    # guard to avoid duplicate weight logs for the same round
+        self._last_weights_round = None
 
     @staticmethod
     def _auc_roc(y_true, y_score) -> float:
@@ -108,6 +110,13 @@ class FLClient:
             client_auc, client_prec = float('nan'), float('nan')
         # delta
         lw, lb = self.model.get_params()
+        # log client weights once per round (post-local-train, pre-submit)
+        try:
+            self._log_client_weights_if_new(round_id=rnd if not self.secagg else None,
+                                            secagg=0 if not self.secagg else 1,
+                                            weights=lw, bias=lb)
+        except Exception:
+            pass
         dw = [lw[i] - gw[i] for i in range(len(gw))]
         # optional clipping
         C = float(os.environ.get("CLIP_C", "1.0"))
@@ -150,6 +159,11 @@ class FLClient:
             peers = {cid: base64.b64decode(b64)
                      for cid, b64 in js['pubkeys'].items()}
             my_id = os.environ.get('CLIENT_ID', 'client')
+            # ensure client weights are logged with the SecAgg handshake round id
+            try:
+                self._log_client_weights_if_new(round_id=round_id, secagg=1, weights=lw, bias=lb)
+            except Exception:
+                pass
             # bias as extra dim
             dim = len(dw) + 1
             mask = make_mask_vector(
@@ -221,3 +235,44 @@ class FLClient:
         self._log_client_metrics(
             round_id=round_id, auc=auc, precision=precision, secagg=secagg)
         self._last_metrics_round = round_id
+
+    def _log_client_weights(self, round_id: int, weights: List[float], bias: float, secagg: int):
+        """Append per-round client weights to a client-specific CSV.
+        Columns: client_id, round, secagg, bias, weights_json
+        """
+        state_dir = Path(os.environ.get("STATE_DIR", "server/state"))
+        out_dir = state_dir / "client_weights"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        client_id = os.environ.get("CLIENT_ID", "client")
+        path = out_dir / f"{client_id}.csv"
+        exists = path.exists()
+        with path.open("a", newline="") as f:
+            w = csv.writer(f)
+            if not exists:
+                w.writerow(["client_id", "round", "secagg", "bias", "weights_json"])
+            w.writerow([client_id, round_id, secagg, f"{bias:.10f}", json.dumps(weights)])
+
+    def _log_client_weights_if_new(self, round_id: int | None, secagg: int, weights: List[float], bias: float):
+        """Log client weights only once per round. If round_id is None (pre-secagg), skip guard.
+        For non-secagg, we use the /global_model round (rnd). For secagg, we use the handshake round_id.
+        """
+        if round_id is None:
+            # If we don't yet have a definitive round_id (e.g., before SecAgg handshake), don't guard on it
+            try:
+                # Best-effort: avoid duplicate consecutive writes with same weights
+                if self._last_weights_round is not None:
+                    return
+            except AttributeError:
+                pass
+            # can't assign _last_weights_round without an id; just write once
+            self._log_client_weights(round_id=-1, weights=weights, bias=bias, secagg=secagg)
+            self._last_weights_round = -1
+            return
+        # Normal guarded write
+        try:
+            if self._last_weights_round == round_id:
+                return
+        except AttributeError:
+            pass
+        self._log_client_weights(round_id=round_id, weights=weights, bias=bias, secagg=secagg)
+        self._last_weights_round = round_id
