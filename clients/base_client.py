@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 from __future__ import annotations
 import base64
 from scripts.encoding import encode_vector_to_int, clip_vector

@@ -1,14 +1,3 @@
-#!/usr/bin/env python3
-"""
-Binary Logistic Regression implemented using only the Python standard library.
-- Stochastic/mini-batch gradient descent
-- L2 regularization
-- CSV-based save/load of parameters
-- Designed to work with CSV inputs only (no NumPy required)
-
-Limitations:
-- Pure Python math on lists is slower than vectorized libraries; keep epochs/batch sizes reasonable.
-"""
 from __future__ import annotations
 import csv
 import math
